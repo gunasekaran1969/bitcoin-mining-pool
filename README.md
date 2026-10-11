@@ -1,67 +1,136 @@
-# Bitcoin Mining Pool Starter
+package main
 
-This repository is a lightweight Bitcoin mining pool prototype for learning and experimentation. It simulates a simplified mining-pool flow: worker registration, job assignment, difficulty checking, share validation, and pool statistics.
+import (
+    "bufio"
+    "encoding/hex"
+    "encoding/json"
+    "fmt"
+    "log"
+    "math/big"
+    "net"
+    "os"
+    "strconv"
+    "strings"
+    "time"
 
-Important notes:
-- This is not a production-ready Bitcoin node or mining pool.
-- It is meant to demonstrate mining-pool concepts and architecture.
-- Real Bitcoin mining requires a full node, protocol compatibility, network configuration, and secure payout systems.
+    "crypto/sha256"
+)
 
-## Features
+type request struct {
+    ID     any    `json:"id"`
+    Method string `json:"method"`
+    Params []json.RawMessage `json:"params"`
+}
 
-- Worker registration
-- Mining job generation
-- Difficulty-based target checks
-- Share submission and validation
-- Pool-level summary statistics
-- Simulated miner client
+type response struct {
+    ID     any  `json:"id"`
+    Result any  `json:"result"`
+    Error  any  `json:"error"`
+}
 
-## Project structure
+type notify struct {
+    Method string `json:"method"`
+    Params []any  `json:"params"`
+}
 
-- `bitcoin_miner.py` – low-level block-header mining logic
-- `mining_pool.py` – pool logic for jobs and share validation
-- `worker.py` – example miner client
-- `README.md` – project overview and usage
+func main() {
+    host := os.Getenv("POOL_ADDR")
+    if host == "" {
+        host = "127.0.0.1:3333"
+    }
 
-## Quick start
+    conn, err := net.Dial("tcp", host)
+    if err != nil {
+        log.Fatalf("connect to pool: %v", err)
+    }
+    defer conn.Close()
 
-1. Create a virtual environment (optional but recommended):
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   ```
+    reader := bufio.NewReader(conn)
 
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+    send := func(req any) {
+        if err := json.NewEncoder(conn).Encode(req); err != nil {
+            log.Fatalf("send request: %v", err)
+        }
+    }
 
-3. Run the demo miner:
-   ```bash
-   python worker.py
-   ```
+    send(map[string]any{"id": 1, "method": "mining.subscribe", "params": []any{}})
+    line, _ := reader.ReadString('\n')
+    var sub response
+    _ = json.Unmarshal([]byte(line), &sub)
+    fmt.Println("Subscribed:", line)
 
-## Example output
+    send(map[string]any{"id": 2, "method": "mining.authorize", "params": []any{"miner-demo", "password"}})
+    authLine, _ := reader.ReadString('\n')
+    fmt.Println("Authorized:", authLine)
 
-```text
-Pool: bc1qexample...
-Worker demo-worker-01 connected.
-Job created: 1
-Mining job 1 assigned.
-Share accepted for worker demo-worker-01. Share count: 1
-Pool stats: {'total_shares': 1, 'blocks_found': 0, 'active_workers': 1}
-```
+    // read the mining.notify
+    notifyLine, _ := reader.ReadString('\n')
+    fmt.Println("Job notify:", notifyLine)
 
-## Security and production notes
+    // demo miner loops until it finds a likely share
+    var job notify
+    if err := json.Unmarshal([]byte(notifyLine), &job); err == nil {
+        if len(job.Params) >= 6 {
+            jobID := job.Params[0].(string)
+            prevHashHex := job.Params[1].(string)
+            merkleHex := job.Params[2].(string)
+            bitsStr := job.Params[3].(string)
+            bits, _ := strconv.ParseUint(bitsStr, 16, 32)
+            timeStampStr := job.Params[4].(string)
+            timeStamp, _ := strconv.ParseUint(timeStampStr, 16, 32)
+            _ = prevHashHex
+            _ = merkleHex
+            _ = timeStamp
 
-A production mining pool requires:
-- a proper Stratum protocol implementation
-- secure worker authentication
-- payout accounting and wallet integrations
-- transaction validation and block templates
-- monitoring, rate limiting, and failover
-- a full Bitcoin node or compatible mining backend
+            target := bitsToTarget(uint32(bits))
+            for nonce := uint32(0); nonce < 1_000_000; nonce++ {
+                header := make([]byte, 80)
+                binaryLittlePutUint32(header[0:4], 1)
+                prev, _ := hex.DecodeString(prevHashHex)
+                copy(header[4:36], prev)
+                merkle, _ := hex.DecodeString(merkleHex)
+                copy(header[36:68], merkle)
+                binaryLittlePutUint32(header[68:72], uint32(timeStamp))
+                binaryLittlePutUint32(header[72:76], uint32(bits))
+                binaryLittlePutUint32(header[76:80], nonce)
 
-## License
+                h1 := sha256.Sum256(header)
+                h2 := sha256.Sum256(h1[:])
+                hInt := new(big.Int).SetBytes(h2[:])
+                if hInt.Cmp(target) <= 0 {
+                    fmt.Printf("Found share for job=%s nonce=%d hash=%s\n", jobID, nonce, hex.EncodeToString(h2[:]))
+                    send(map[string]any{"id": 3, "method": "mining.submit", "params": []any{"miner-demo", jobID, fmt.Sprintf("%08x", nonce)}})
+                    resultLine, _ := reader.ReadString('\n')
+                    fmt.Println("Submit result:", resultLine)
+                    return
+                }
+            }
+        }
+    }
 
-This project is provided for educational purposes only.
+    time.Sleep(500 * time.Millisecond)
+    send(map[string]any{"id": 3, "method": "mining.submit", "params": []any{"miner-demo", "job-1", "00000000"}})
+    resultLine, _ := reader.ReadString('\n')
+    fmt.Println("Submit result:", resultLine)
+}
+
+func binaryLittlePutUint32(dst []byte, value uint32) {
+    binary := make([]byte, 4)
+    binary[0] = byte(value)
+    binary[1] = byte(value >> 8)
+    binary[2] = byte(value >> 16)
+    binary[3] = byte(value >> 24)
+    copy(dst, binary)
+}
+
+func bitsToTarget(bits uint32) *big.Int {
+    exponent := int(bits >> 24)
+    mantissa := bits & 0x00ffffff
+    target := new(big.Int).SetUint64(uint64(mantissa))
+    if exponent <= 3 {
+        shift := uint(8 * (3 - exponent))
+        return target.Rsh(target, shift)
+    }
+    shift := uint(8 * (exponent - 3))
+    return target.Lsh(target, shift)
+}

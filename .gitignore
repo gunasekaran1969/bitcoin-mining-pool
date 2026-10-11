@@ -1,4 +1,57 @@
-.venv/
-__pycache__/
-*.pyc
-.DS_Store
+# Bitcoin Mining Pool (Go)
+
+This repository contains a Go-based Bitcoin mining pool starter designed around the real-world architecture teams actually use for pool backends.
+
+Why Go?
+- High concurrency and low memory overhead
+- Strong low-level networking support
+- Excellent for Stratum-style TCP services and worker coordination
+- Commonly chosen for production pool backends and high-throughput miner infrastructure
+
+This project is a practical starter, not a full production deployment. It demonstrates the core architecture used in real mining pool systems:
+
+- worker registration and authorization
+- mining jobs
+- Stratum-style TCP communication
+- share validation
+- pool statistics
+
+## Architecture
+
+The project is intentionally designed in a realistic way:
+
+- `cmd/pool` – the pool server entry point
+- `internal/pool` – job generation, share validation, worker registry, and the TCP protocol handler
+- `examples/miner` – a basic miner client that connects to the pool
+
+## Run the pool
+
+```bash
+go run ./cmd/pool
+```
+
+The pool listens on `:3333` by default.
+
+## Run the demo miner
+
+```bash
+go run ./examples/miner
+```
+
+## What this is and is not
+
+This project is meant to be a serious starter for a real mining pool stack. It is not a matching full Bitcoin node integration or a production-ready payout engine.
+
+For a real Bitcoin pool in production, you would still need:
+
+- a full Bitcoin Core node
+- a Stratum V1 or V2 implementation
+- transaction selection and block template integration
+- share accounting database
+- wallet and payout logic
+- monitoring and failover
+- secure networking and access control
+
+## License
+
+Educational and prototype use only.
